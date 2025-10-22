@@ -12,5 +12,11 @@ default_commit_message = "WARNING: commit message generation failure"
 template = """
 Generate a commit message in {language} for these changes:
 
+- - -
+
 {diff_content}
+
+- - -
+
+Review the commit message from the subagent and validate it follows Conventional Commits format and accurately reflects the changes. If you are satisfied with the commit message, OUTPUT ONLY THE COMMIT MESSAGE, NO EXPLANATIONS OR EXTRA TEXT.
 """
