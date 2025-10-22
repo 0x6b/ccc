@@ -3,6 +3,7 @@ use std::{process::Command, sync::LazyLock};
 use anyhow::Result;
 use regex::Regex;
 use serde::Deserialize;
+use serde_json::{Map, Value};
 use toml::from_str;
 
 #[derive(Deserialize)]
@@ -21,6 +22,15 @@ struct Generator {
     command: String,
     args: Vec<String>,
     default_commit_message: String,
+    agent: Agent,
+}
+
+#[derive(Deserialize)]
+struct Agent {
+    name: String,
+    description: String,
+    prompt: String,
+    tools: String,
 }
 
 static CONFIG: LazyLock<Config> = LazyLock::new(|| {
@@ -28,17 +38,25 @@ static CONFIG: LazyLock<Config> = LazyLock::new(|| {
         .expect("Failed to parse embedded commit-config.toml")
 });
 
+static AGENTS_JSON: LazyLock<String> = LazyLock::new(|| {
+    let mut agents = Map::new();
+    agents.insert(CONFIG.generator.agent.name.clone(), CONFIG.generator.agent.to_json());
+    Value::Object(agents).to_string()
+});
+
 static CONVENTIONAL_COMMIT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[a-z]+:\s.+").expect("Failed to compile conventional commit regex")
+    Regex::new(r"^[a-z]+(?:\([^)]+\))?(?:!)?:\s.+")
+        .expect("Failed to compile conventional commit regex")
 });
 
 /// Generates commit messages using AI based on git diff content
 #[derive(Default)]
 pub struct CommitMessageGenerator {
-    prompt_template: &'static str,
-    command: &'static str,
-    args: &'static [String],
-    language: &'static str,
+    prompt_template: String,
+    command: String,
+    args: Vec<String>,
+    agents_json: &'static str,
+    language: String,
 }
 
 impl CommitMessageGenerator {
@@ -48,10 +66,11 @@ impl CommitMessageGenerator {
     /// - `language` - The language to use for generating commit messages
     pub fn new(language: &str) -> Result<Self> {
         Ok(Self {
-            prompt_template: &CONFIG.prompt.template,
-            command: &CONFIG.generator.command,
-            args: &CONFIG.generator.args,
-            language: Box::leak(Box::new(language.to_string())),
+            prompt_template: CONFIG.prompt.template.clone(),
+            command: CONFIG.generator.command.clone(),
+            args: CONFIG.generator.args.clone(),
+            agents_json: &AGENTS_JSON,
+            language: language.to_string(),
         })
     }
 
@@ -78,17 +97,36 @@ impl CommitMessageGenerator {
     fn try_generate(&self, diff_content: &str) -> Option<String> {
         let prompt = self
             .prompt_template
-            .replace("{language}", self.language)
+            .replace("{language}", &self.language)
             .replace("{diff_content}", diff_content);
 
-        Command::new(self.command)
+        let mut command = Command::new(&self.command);
+
+        command
             .env("CLAUDE_AUTO_COMMIT_RUNNING", "1") // To prevent recursive calls
-            .args(self.args.iter())
+            .args(&self.args);
+
+        command.arg("--agents");
+        command.arg(self.agents_json);
+
+        command
             .arg(&prompt)
             .output()
             .ok()
             .filter(|output| output.status.success())
             .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
             .filter(|message| !message.is_empty())
+    }
+}
+
+impl Agent {
+    fn to_json(&self) -> Value {
+        let mut fields = Map::new();
+
+        fields.insert("description".to_string(), Value::String(self.description.clone()));
+        fields.insert("prompt".to_string(), Value::String(self.prompt.clone()));
+        fields.insert("tools".to_string(), Value::String(self.tools.clone()));
+
+        Value::Object(fields)
     }
 }
